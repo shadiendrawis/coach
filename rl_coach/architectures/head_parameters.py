@@ -36,7 +36,6 @@ class HeadParameters(NetworkComponentParameters):
         return 'rl_coach.architectures.tensorflow_components.heads:' + self.parameterized_class_name
 
 
-
 class PPOHeadParameters(HeadParameters):
     def __init__(self, activation_function: str ='tanh', name: str='ppo_head_params',
                  num_output_head_copies: int = 1, rescale_gradient_from_head_by_factor: float = 1.0,
@@ -183,6 +182,16 @@ class ACERPolicyHeadParameters(HeadParameters):
                  num_output_head_copies: int = 1, rescale_gradient_from_head_by_factor: float = 1.0,
                  loss_weight: float = 1.0, dense_layer=None):
         super().__init__(parameterized_class_name="ACERPolicyHead", activation_function=activation_function, name=name,
+                         dense_layer=dense_layer, num_output_head_copies=num_output_head_copies,
+                         rescale_gradient_from_head_by_factor=rescale_gradient_from_head_by_factor,
+                         loss_weight=loss_weight)
+
+
+class RNDHeadParameters(HeadParameters):
+    def __init__(self, activation_function: str ='relu', name: str='rnd_head_params',
+                 num_output_head_copies: int = 1, rescale_gradient_from_head_by_factor: float = 1.0,
+                 loss_weight: float = 1.0, dense_layer=None):
+        super().__init__(parameterized_class_name="RNDHead", activation_function=activation_function, name=name,
                          dense_layer=dense_layer, num_output_head_copies=num_output_head_copies,
                          rescale_gradient_from_head_by_factor=rescale_gradient_from_head_by_factor,
                          loss_weight=loss_weight)
