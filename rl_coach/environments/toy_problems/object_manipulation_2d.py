@@ -28,6 +28,110 @@ from rl_coach.environments.environment import EnvironmentParameters
 from rl_coach.filters.filter import NoInputFilter, NoOutputFilter
 
 
+# Parameters
+class ObjectManipulation2DEnvironmentParameters(EnvironmentParameters):
+    def __init__(self):
+        super().__init__()
+        self.default_input_filter = NoInputFilter()
+        self.default_output_filter = NoOutputFilter()
+
+    @property
+    def path(self):
+        return 'rl_coach.environments.toy_problems.object_manipulation_2d:ObjectManipulation2DEnvironment'
+
+
+class ObjectManipulation2DEnvironment(Environment):
+    def __init__(self,
+                 level: LevelSelection,
+                 frame_skip: int,
+                 visualization_parameters: VisualizationParameters,
+                 seed: Union[None, int] = None,
+                 human_control: bool=False,
+                 custom_reward_threshold: Union[int, float]=None,
+                 width: int = 84,
+                 height: int = 84,
+                 num_rotations: int = 24,
+                 episode_length: int = 50000,
+                 **kwargs):
+        super().__init__(level, seed, frame_skip, human_control, custom_reward_threshold, visualization_parameters)
+
+        # seed
+        if self.seed is not None:
+            np.random.seed(self.seed)
+            random.seed(self.seed)
+
+        self.object = Object2D(width, height, num_rotations)
+        self.last_result = self.object.reset()
+
+        self.state_space = StateSpace({})
+
+        # image observations
+        self.state_space['observation'] = PlanarMapsObservationSpace(shape=np.array([width, height, 3]), low=0, high=255)
+
+        # measurements observations
+        measurements_space_size = 4
+        measurements_names = ['x-position', 'y-position', 'rotation', 'num_covered_states']
+        self.state_space['measurements'] = VectorObservationSpace(shape=measurements_space_size,
+                                                                  measurements_names=measurements_names)
+
+        # actions
+        self.num_actions = 6
+        self.action_space = DiscreteActionSpace(self.num_actions)
+
+        self.steps = 0
+        self.episode_length = episode_length
+
+        self.width = width
+        self.height = height
+        self.num_rotations = num_rotations
+        self.bin_size = 1
+        self.covered_states = np.zeros((int(self.width / self.bin_size),
+                                        int(self.height / self.bin_size),
+                                        self.num_rotations))
+        self.num_covered_states = 0
+
+        # render
+        if self.is_rendered:
+            image = np.squeeze(self.object.render())
+            self.renderer.create_screen(image.shape[1], image.shape[0])
+
+        # initialize the state by getting a new state from the environment
+        self.reset_internal_state(True)
+
+    def _update_state(self):
+        self.state = dict()
+
+        self.state['observation'] = self.last_result['observation']
+        self.state['measurements'] = np.concatenate((self.last_result['measurements'], [self.num_covered_states]))
+
+        self.reward = 0
+
+        # self.done = self.steps == self.episode_length
+        self.done = self.steps == 100
+
+    def _take_action(self, action):
+        self.steps += 1
+        self.last_result = self.object.step(action)
+
+        state = self.last_result['measurements']
+        bin_x = int(state[1] / self.bin_size)
+        bin_y = int(state[0] / self.bin_size)
+        if self.covered_states[bin_x, bin_y, state[2]] == 0:
+            self.covered_states[bin_x, bin_y, state[2]] = 1
+            self.num_covered_states += 1
+
+    def _restart_environment_episode(self, force_environment_reset=False):
+        self.steps = 0
+        # self.last_result = self.object.reset()
+
+    def get_rendered_image(self):
+        raw_img = copy.copy(np.squeeze(self.last_result['observation']))
+        cover_image = np.kron(np.sum(self.covered_states, 2), np.ones((self.bin_size, self.bin_size)))
+        cover_image = np.round((cover_image / self.num_rotations)*255)
+        raw_img[:, :, 1] = np.maximum(raw_img[:, :, 1], cover_image)
+        return raw_img
+
+
 class Object2D:
     def __init__(self, width: int, height: int, num_rotations: int, init_state: Union[None, tuple] = None):
         self.width = width
@@ -47,8 +151,8 @@ class Object2D:
         return xy
 
     def sample_random_state(self):
-        return np.array([random.uniform(0, self.width-1),
-                         random.uniform(0, self.height-1),
+        return np.array([random.uniform(5, self.width-6),
+                         random.uniform(5, self.height-6),
                          random.uniform(0, self.num_rotations)],
                         dtype=np.int32)
 
@@ -94,103 +198,3 @@ class Object2D:
         draw.line((points[3], points[0]), fill=(255, 255, 255), width=1)
         image = np.asarray(image)
         return image
-
-
-# Parameters
-class ObjectManipulation2DEnvironmentParameters(EnvironmentParameters):
-    def __init__(self):
-        super().__init__()
-        self.default_input_filter = NoInputFilter()
-        self.default_output_filter = NoOutputFilter()
-
-    @property
-    def path(self):
-        return 'rl_coach.environments.toy_problems.object_manipulation_2d:ObjectManipulation2DEnvironment'
-
-
-class ObjectManipulation2DEnvironment(Environment):
-    def __init__(self,
-                 level: LevelSelection,
-                 frame_skip: int,
-                 visualization_parameters: VisualizationParameters,
-                 seed: Union[None, int] = None,
-                 human_control: bool=False,
-                 custom_reward_threshold: Union[int, float]=None,
-                 width: int = 84,
-                 height: int = 84,
-                 num_rotations: int = 16,
-                 episode_length: int = 50000,
-                 **kwargs):
-        super().__init__(level, seed, frame_skip, human_control, custom_reward_threshold, visualization_parameters)
-
-        # seed
-        if self.seed is not None:
-            np.random.seed(self.seed)
-            random.seed(self.seed)
-
-        self.object = Object2D(width, height, num_rotations)
-        self.last_result = self.object.reset()
-
-        self.state_space = StateSpace({})
-
-        # image observations
-        self.state_space['observation'] = PlanarMapsObservationSpace(shape=np.array([width, height, 3]), low=0, high=255)
-
-        # measurements observations
-        measurements_space_size = 4
-        measurements_names = ['x-position', 'y-position', 'rotation', 'num_covered_states']
-        self.state_space['measurements'] = VectorObservationSpace(shape=measurements_space_size,
-                                                                  measurements_names=measurements_names)
-
-        # actions
-        self.num_actions = 6
-        self.action_space = DiscreteActionSpace(self.num_actions)
-
-        self.steps = 0
-        self.episode_length = episode_length
-
-        self.width = width
-        self.height = height
-        self.num_rotations = num_rotations
-        self.covered_states = np.zeros((self.width, self.height, self.num_rotations))
-        self.num_covered_states = 0
-
-        # render
-        if self.is_rendered:
-            image = np.squeeze(self.object.render())
-            self.renderer.create_screen(image.shape[1], image.shape[0])
-
-        # initialize the state by getting a new state from the environment
-        self.reset_internal_state(True)
-
-    def _update_state(self):
-        self.state = dict()
-
-        self.state['observation'] = self.last_result['observation']
-        self.state['measurements'] = np.concatenate((self.last_result['measurements'], [self.num_covered_states]))
-
-        self.reward = 0
-
-        # self.done = self.steps == self.episode_length
-        self.done = self.steps == 100
-
-    def _take_action(self, action):
-        self.steps += 1
-        self.last_result = self.object.step(action)
-
-        state = self.last_result['measurements']
-        if self.covered_states[state[1], state[0], state[2]] == 0:
-            self.covered_states[state[1], state[0], state[2]] = 1
-            self.num_covered_states += 1
-
-    def _restart_environment_episode(self, force_environment_reset=False):
-        self.steps = 0
-        # self.last_result = self.object.reset()
-
-    def get_rendered_image(self):
-        raw_img = copy.copy(np.squeeze(self.last_result['observation']))
-        cover_image = np.sum(self.covered_states, 2)
-        for i in range(self.width):
-            for j in range(self.height):
-                raw_img[i, j, 1] = max(raw_img[i, j, 1], np.round((cover_image[i, j] / self.num_rotations)*255))
-        return raw_img

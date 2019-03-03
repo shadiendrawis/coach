@@ -213,3 +213,31 @@ class NoisyNetDense(layers.NoisyNetDense):
     @reg_to_tf(layers.NoisyNetDense)
     def to_tf(base: layers.NoisyNetDense):
         return NoisyNetDense(units=base.units)
+
+
+class Pooling(layers.Pooling):
+    def __init__(self, pool_type: str, pool_size: int, strides: int):
+        super(Pooling, self).__init__(pool_type=pool_type, pool_size=pool_size, strides=strides)
+
+    def __call__(self, input_layer, name: str = None, is_training=None):
+        """
+        returns a list of tensorflow pooling layer
+        :param input_layer: previous layer
+        :param name: layer name
+        :return: Pooling layer
+        """
+        if self.pool_type == 'max':
+            return tf.layers.max_pooling2d(input_layer, pool_size=self.pool_size, strides=self.strides)
+        elif self.pool_type == 'average':
+            return tf.layers.average_pooling2d(input_layer, pool_size=self.pool_size, strides=self.strides)
+        else:
+            raise Exception("Invalid pooing type chosen ({}), the available options are ['max', 'average'].".format(
+                self.pool_type))
+
+    @staticmethod
+    @reg_to_tf(layers.Pooling)
+    def to_tf(base: layers.Pooling):
+        return Pooling(
+            pool_type=base.pool_type,
+            pool_size=base.pool_size,
+            strides=base.strides)

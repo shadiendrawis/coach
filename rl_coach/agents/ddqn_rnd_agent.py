@@ -16,6 +16,7 @@
 
 from typing import Union
 import copy
+import matplotlib.pyplot as plt
 
 import numpy as np
 
@@ -27,18 +28,21 @@ from rl_coach.base_parameters import NetworkParameters
 from rl_coach.architectures.embedder_parameters import InputEmbedderParameters
 from rl_coach.architectures.middleware_parameters import FCMiddlewareParameters
 from rl_coach.architectures.head_parameters import RNDHeadParameters
-from rl_coach.exploration_policies.categorical import CategoricalParameters
-from rl_coach.core_types import ActionInfo
+from rl_coach.exploration_policies.e_greedy import EGreedyParameters
+from rl_coach.schedules import LinearSchedule
+from rl_coach.core_types import ActionInfo, Batch
 from rl_coach.environments.toy_problems.object_manipulation_2d import Object2D
 
 
 class DDQNRNDAgentParameters(AgentParameters):
     def __init__(self):
         super().__init__(algorithm=DQNAlgorithmParameters(),
-                         exploration=CategoricalParameters(),
+                         exploration=EGreedyParameters(),
                          memory=ExperienceReplayParameters(),
-                         networks={"main": DQNNetworkParameters(), "rnd": RNDNetworkParameters()})
-
+                         networks={"main": DQNNetworkParameters(),
+                                   "predictor": RNDNetworkParameters(),
+                                   "constant": RNDNetworkParameters()})
+        self.exploration.epsilon_schedule = LinearSchedule(1.0, 0.15, 15000)
     @property
     def path(self):
         return 'rl_coach.agents.ddqn_rnd_agent:DDQNRNDAgent'
@@ -49,35 +53,49 @@ class RNDNetworkParameters(NetworkParameters):
         super().__init__()
         self.input_embedders_parameters = {'observation': InputEmbedderParameters()}
         self.middleware_parameters = FCMiddlewareParameters(activation_function='none')
-        self.heads_parameters = [RNDHeadParameters(), RNDHeadParameters()]
+        self.heads_parameters = [RNDHeadParameters()]
         self.optimizer_type = 'Adam'
         self.clip_gradients = None
-        self.use_separate_networks_per_head = True
-        self.create_target_network = True
+        self.create_target_network = False
 
 
 # Double DQN - https://arxiv.org/abs/1509.06461
 class DDQNRNDAgent(ValueOptimizationAgent):
     def __init__(self, agent_parameters, parent: Union['LevelManager', 'CompositeAgent']=None):
         super().__init__(agent_parameters, parent)
-        self.prediction_error_list = []
+        self.rewards = []
+        self.num_steps = 0
+        if self.ap.visualization.render:
+            self.plot = plt.imshow(np.zeros((84, 84)))
+            self.cbar = plt.colorbar(self.plot)
+            plt.title('Prediction Error')
 
     def learn_from_batch(self, batch):
         network_keys = self.ap.network_wrappers['main'].input_embedders_parameters.keys()
 
-        state_embedding = self.networks['rnd'].online_network.predict(
-            {k: v for k, v in batch.states(network_keys).items()})
+        dataset = copy.deepcopy(self.memory.transitions)
+        dataset = Batch(dataset)
+        dataset.shuffle()
+        if self.num_steps % 1024 == 0:
+            for i in range(int(dataset.size / self.ap.network_wrappers['predictor'].batch_size)):
+                start = i * self.ap.network_wrappers['predictor'].batch_size
+                end = (i + 1) * self.ap.network_wrappers['predictor'].batch_size
 
-        result = self.networks['rnd'].train_and_sync_networks(
-                copy.copy({k: v for k, v in batch.states(network_keys).items()}),
-                [state_embedding[0], state_embedding[0]]
-            )
+                const_embedding = self.networks['constant'].online_network.predict(
+                    {k: v[start:end] for k, v in dataset.next_states(network_keys).items()})
 
-        embedding, prediction = self.networks['rnd'].target_network.predict(batch.next_states(network_keys))
+                _ = self.networks['predictor'].train_and_sync_networks(
+                    copy.copy({k: v[start:end] for k, v in dataset.next_states(network_keys).items()}),
+                    [const_embedding]
+                )
+
+        embedding = self.networks['constant'].online_network.predict(batch.next_states(network_keys))
+        prediction = self.networks['predictor'].online_network.predict(batch.next_states(network_keys))
         prediction_error = np.mean((embedding - prediction) ** 2, axis=1)
-        self.prediction_error_list += list(prediction_error)
-        intrinsic_rewards = (prediction_error - np.mean(self.prediction_error_list)) / (
-            np.std(self.prediction_error_list) + 1e-8)
+        # self.rewards += list(prediction_error)
+        # intrinsic_rewards = (prediction_error - np.mean(prediction_error)) / (np.std(prediction_error) + 1e-15)
+        intrinsic_rewards = np.zeros_like(prediction_error)
+        intrinsic_rewards[np.argmax(prediction_error)] = 1
 
         selected_actions = np.argmax(self.networks['main'].online_network.predict(batch.next_states(network_keys)), 1)
         q_st_plus_1, TD_targets = self.networks['main'].parallel_prediction([
@@ -105,6 +123,10 @@ class DDQNRNDAgent(ValueOptimizationAgent):
         # return 0, 0, 0
 
     def choose_action(self, curr_state):
+        if self.num_steps % 1024 == 0 and self.ap.visualization.render:
+            self.show_pred_err_img()
+        self.num_steps += 1
+
         num_covered_states = curr_state['measurements'][3]
         self.agent_logger.create_signal_value('Number of Covered States', num_covered_states)
 
@@ -112,12 +134,9 @@ class DDQNRNDAgent(ValueOptimizationAgent):
 
         # choose action according to the exploration policy and the current phase (evaluating or training the agent)
         actions_q_values = actions_q_values.squeeze()
-        e_q = np.exp(actions_q_values - np.max(actions_q_values))
-        action_probabilities = e_q / e_q.sum()
-        # action_probabilities = np.ones_like(action_probabilities) / action_probabilities.shape[0]
-        action = self.exploration_policy.get_action(action_probabilities)
+        action = self.exploration_policy.get_action(actions_q_values)
         while not self._is_valid_action(action, curr_state['measurements']):
-            action = self.exploration_policy.get_action(action_probabilities)
+            action = self.exploration_policy.get_action(actions_q_values)
         # action, action_probabilities = self._choose_greedy_action(curr_state['measurements'])
         # while not self._is_valid_action(action, curr_state['measurements']):
         #     action, action_probabilities = self._choose_greedy_action(curr_state['measurements'])
@@ -144,13 +163,13 @@ class DDQNRNDAgent(ValueOptimizationAgent):
     @staticmethod
     def _is_valid_action(action, state):
         if action == 0:
-            ret = state[0] != 83
+            ret = state[0] != 79
         elif action == 1:
-            ret = state[0] != 0
+            ret = state[0] != 5
         elif action == 2:
-            ret = state[1] != 83
+            ret = state[1] != 79
         elif action == 3:
-            ret = state[1] != 0
+            ret = state[1] != 5
         else:
             ret = True
         return ret
@@ -158,10 +177,11 @@ class DDQNRNDAgent(ValueOptimizationAgent):
     def _choose_greedy_action(self, state):
         prediction_errors = []
         for action in range(6):
-            obj = Object2D(84, 84, 16, state[:3])
+            obj = Object2D(84, 84, 24, state[:3])
             obj.step(action)
             img = np.expand_dims(obj.render(), 0)
-            emb, pred = self.networks['rnd'].online_network.predict({'observation': img})
+            emb = self.networks['constant'].online_network.predict({'observation': img})
+            pred = self.networks['predictor'].online_network.predict({'observation': img})
             emb = np.squeeze(emb)
             pred = np.squeeze(pred)
             pred_err = np.sum((emb - pred) ** 2)
@@ -169,3 +189,24 @@ class DDQNRNDAgent(ValueOptimizationAgent):
         action_probabilities = prediction_errors / np.sum(prediction_errors)
         action = np.random.choice(list(range(6)), p=action_probabilities)
         return action, action_probabilities
+
+    def show_pred_err_img(self):
+        img = np.zeros((84, 84))
+        for i in range(84):
+            obs = []
+            for j in range(84):
+                k = np.random.choice(list(range(24)))
+                obj = Object2D(84, 84, 24, (i, j, k))
+                obs.append(obj.render())
+            obs = np.stack(obs, axis=0)
+            emb = self.networks['constant'].online_network.predict({'observation': obs})
+            pred = self.networks['predictor'].online_network.predict({'observation': obs})
+            pred_err = np.mean((emb - pred) ** 2, axis=1)
+            img[:, i] = pred_err
+        plt.imshow(img)
+        self.cbar.set_clim(vmin=np.min(img), vmax=np.max(img))
+        cbar_ticks = np.linspace(np.min(img), np.max(img), num=11, endpoint=True)
+        self.cbar.set_ticks(cbar_ticks)
+        self.cbar.draw_all()
+        plt.pause(.1)
+        plt.draw()

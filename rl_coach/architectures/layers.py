@@ -76,3 +76,22 @@ class NoisyNetDense(object):
 
     def __str__(self):
         return "Noisy Dense (num outputs = {})".format(self.units)
+
+
+class Pooling(object):
+    """
+    Base class for framework specific Pooling (Max/Average) layer group
+    """
+    def __init__(self, pool_type: str, pool_size: int, strides: int):
+        self.pool_type = pool_type
+        self.pool_size = pool_size
+        self.strides = strides
+
+    def __str__(self):
+        result = []
+        if self.pool_type == 'max':
+            result += ["Maximum Pooling (pool size = {}, stride = {})".format(self.pool_size, self.strides)]
+        if self.pool_type == 'average':
+            result += ["Average Pooling (pool size = {}, stride = {})".format(self.pool_size, self.strides)]
+        return "\n".join(result)
+
